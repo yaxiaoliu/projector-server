@@ -21,25 +21,38 @@
  * Please contact JetBrains, Na Hrebenech II 1718/10, Prague, 14000, Czech Republic
  * if you need additional information or have any questions.
  */
-plugins {
-  kotlin("jvm")
-  `maven-publish`
-}
 
-publishing {
-  publications {
-    create<MavenPublication>("maven") {
-      from(components["java"])
-    }
+package org.jetbrains.projector.plugin.ui
+
+import java.awt.*
+import javax.swing.JPanel
+
+class LinearPanelBuilder(private var panel: JPanel) {
+  private val constraints = GridBagConstraints()
+
+  init {
+    panel.componentOrientation = ComponentOrientation.LEFT_TO_RIGHT
+    panel.layout = GridBagLayout()
+    constraints.fill = GridBagConstraints.HORIZONTAL
+    constraints.gridx = 0
+    constraints.gridy = 0
   }
-}
 
-val kotlinVersion: String by project
-val projectorClientVersion: String by project
-version = project(":projector-server").version
+  fun addNextComponent(
+    c: Component, gridWidth: Int = 1, weightx: Double = 1.0,
+    leftGap: Int = 0, rightGap: Int = 0, topGap: Int = 0, bottomGap: Int = 0,
+  ): LinearPanelBuilder {
+    constraints.gridwidth = gridWidth
+    constraints.weightx = weightx
+    constraints.insets = Insets(topGap, leftGap, bottomGap, rightGap)
+    panel.add(c, constraints)
+    constraints.gridx += gridWidth
+    return this
+  }
 
-dependencies {
-  implementation("com.github.JetBrains.projector-client:projector-util-logging:$projectorClientVersion")
-  testImplementation(kotlin("test", kotlinVersion))
-  testImplementation(kotlin("test-junit", kotlinVersion))
+  fun startNextLine(): LinearPanelBuilder {
+    constraints.gridx = 0
+    constraints.gridy += 1
+    return this
+  }
 }

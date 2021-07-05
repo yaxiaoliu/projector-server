@@ -21,35 +21,39 @@
  * Please contact JetBrains, Na Hrebenech II 1718/10, Prague, 14000, Czech Republic
  * if you need additional information or have any questions.
  */
+package org.jetbrains.projector.plugin.actions
+
+import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.PlatformDataKeys
-import com.intellij.openapi.project.DumbAwareAction
-import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import org.jetbrains.projector.plugin.getActionGroup
 
-class SessionAction : DumbAwareAction() {
-
-  override fun actionPerformed(e: AnActionEvent) {
-    check(ProjectorService.isSessionRunning) {
-      "Projector session is not started"
-    }
-
-    val project = PlatformDataKeys.PROJECT.getData(e.dataContext)
-    val sessionDialog = SessionDialog(project)
-    sessionDialog.pack()
-    sessionDialog.show()
-
-    if (sessionDialog.exitCode == DialogWrapper.OK_EXIT_CODE) {
-      ProjectorService.currentSession.apply {
-        host = sessionDialog.listenAddress
-        rwToken = sessionDialog.rwToken
-        roToken = sessionDialog.roToken
-      }
-    }
+class ProjectorActionGroup : DefaultActionGroup() {
+  override fun update(event: AnActionEvent) {
+    event.presentation.isEnabledAndVisible = showMenu
   }
 
-  override fun update(e: AnActionEvent) {
-    val state = ProjectorService.enabled == EnabledState.HAS_VM_OPTIONS_AND_ENABLED
-    e.presentation.isEnabled = state
-    e.presentation.isVisible = state
+  companion object {
+    private var showMenu = false
+
+    fun show() {
+      showMenu = true
+      update()
+    }
+
+    fun hide() {
+      showMenu = false
+    }
+
+    fun update() {
+      val menu = getActionGroup("projector.menu")
+      val ctx = DataManager.getInstance().dataContextFromFocusAsync
+      val event = ctx.blockingGet(100)?.let {
+        AnActionEvent.createFromAnAction(menu, null, "", it)
+      }
+      if (event != null) {
+        menu.update(event)
+      }
+    }
   }
 }

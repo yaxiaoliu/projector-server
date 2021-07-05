@@ -23,6 +23,7 @@
  */
 package org.jetbrains.projector.server
 
+import org.jetbrains.projector.server.service.ProjectorFontProvider
 import java.lang.reflect.Method
 import kotlin.system.exitProcess
 
@@ -60,9 +61,10 @@ object ProjectorLauncher {
     setupRepaintManager()
   }
 
-  private fun initalizeHeadless() {
+  private fun initializeHeadless() {
     setupSystemProperties()
     setupSingletons()
+    ProjectorFontProvider.isAgent = false
   }
 
   private fun runProjectorServer(): Boolean {
@@ -70,7 +72,7 @@ object ProjectorLauncher {
 
     assert(ProjectorServer.isEnabled) { "Can't start the ${ProjectorServer::class.simpleName} because it's disabled..." }
 
-    val server = ProjectorServer.startServer(isAgent = false) { initalizeHeadless() }
+    val server = ProjectorServer.startServer(isAgent = false) { initializeHeadless() }
 
     Runtime.getRuntime().addShutdownHook(object : Thread() {
 

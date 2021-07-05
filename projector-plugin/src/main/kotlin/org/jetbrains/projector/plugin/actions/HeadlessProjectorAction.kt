@@ -21,25 +21,19 @@
  * Please contact JetBrains, Na Hrebenech II 1718/10, Prague, 14000, Czech Republic
  * if you need additional information or have any questions.
  */
-plugins {
-  kotlin("jvm")
-  `maven-publish`
-}
+package org.jetbrains.projector.plugin.actions
 
-publishing {
-  publications {
-    create<MavenPublication>("maven") {
-      from(components["java"])
-    }
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.project.DumbAwareAction
+import org.jetbrains.projector.plugin.isHeadlessProjectorDetected
+
+class HeadlessProjectorAction : DumbAwareAction() {
+  override fun actionPerformed(e: AnActionEvent) {}
+  override fun update(e: AnActionEvent) {
+    e.presentation.isEnabledAndVisible = isHeadlessProjectorDetected()
   }
-}
 
-val kotlinVersion: String by project
-val projectorClientVersion: String by project
-version = project(":projector-server").version
-
-dependencies {
-  implementation("com.github.JetBrains.projector-client:projector-util-logging:$projectorClientVersion")
-  testImplementation(kotlin("test", kotlinVersion))
-  testImplementation(kotlin("test-junit", kotlinVersion))
+  companion object {
+    const val ID = "projector.headless"
+  }
 }

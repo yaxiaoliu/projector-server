@@ -21,22 +21,21 @@
  * Please contact JetBrains, Na Hrebenech II 1718/10, Prague, 14000, Czech Republic
  * if you need additional information or have any questions.
  */
-import com.intellij.ide.plugins.IdeaPluginDescriptor
-import com.intellij.ide.plugins.PluginInstaller
-import com.intellij.ide.plugins.PluginStateListener
+
+package org.jetbrains.projector.plugin.ui
+
+import com.intellij.notification.NotificationDisplayType
+
+import com.intellij.notification.NotificationGroup
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.startup.StartupActivity
 
-class RegisterPluginInstallerStateListener : StartupActivity {
-  override fun runActivity(project: Project) {
-    PluginInstaller.addStateListener(object : PluginStateListener {
-      override fun install(descriptor: IdeaPluginDescriptor) {}
 
-      override fun uninstall(descriptor: IdeaPluginDescriptor) {
-        if (ProjectorService.enabled == EnabledState.HAS_VM_OPTIONS_AND_ENABLED) {
-          ProjectorService.disable()
-        }
-      }
-    })
-  }
+private val PROJECTOR_GROUP = NotificationGroup("projector.notifications.group",
+                                                NotificationDisplayType.STICKY_BALLOON,
+                                                true)
+
+fun displayNotification(project: Project, title: String, subtitle: String, content: String) {
+  val msg = PROJECTOR_GROUP.createNotification(title, subtitle, content, NotificationType.INFORMATION)
+  msg.notify(project)
 }

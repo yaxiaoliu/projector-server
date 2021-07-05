@@ -74,6 +74,17 @@ if (project.rootProject.file('local.properties').canRead()) {
   localProperties.load(project.rootProject.file("local.properties").newDataInputStream())
 }
 
+// relay arguments
+def relayURL=localProperties["ORG_JETBRAINS_PROJECTOR_RELAY_URL"]
+def serverId=localProperties["ORG_JETBRAINS_PROJECTOR_SERVER_ID"]
+
+def relayArgs = []
+
+if (relayURL!=null && serverId != null) {
+  relayArgs = ["-DORG_JETBRAINS_PROJECTOR_RELAY_URL=$relayURL", "-DORG_JETBRAINS_PROJECTOR_SERVER_ID=$serverId"]
+}
+
+
 def serverTargetClasspath = localProperties['projectorLauncher.targetClassPath']
 def serverClassToLaunch = localProperties['projectorLauncher.classToLaunch']
 println("----------- Server launch config ---------------")
@@ -90,7 +101,7 @@ if (serverTargetClasspath != null && serverClassToLaunch != null) {
       "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
       "--add-opens=java.desktop/sun.font=ALL-UNNAMED",
       "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
-    ]
+    ] + relayArgs
   }
 }
 
@@ -102,7 +113,6 @@ if (ideaPath != null) {
   def ideaLib = "$ideaPath/lib"
   def ideaClassPath = "$ideaLib/bootstrap.jar:$ideaLib/extensions.jar:$ideaLib/util.jar:$ideaLib/jdom.jar:$ideaLib/log4j.jar:$ideaLib/trove4j.jar:$ideaLib/trove4j.jar"
   def jdkHome = System.getProperty('java.home')
-
   println(jdkHome)
 
   def ideaPathsSelector = "ProjectorIntelliJIdea"
@@ -127,110 +137,97 @@ if (ideaPath != null) {
       "--add-opens=java.base/java.lang=ALL-UNNAMED",
       "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
       "-Djdk.attach.allowAttachSelf=true",
-    ]
+    ] + relayArgs
   }
 }
 
-def fontsPath = "src/main/resources/fonts"
+def downloadFontsInZip(
+  String name,
+  String zipUrl,
+  Map<String, String> originalToDest
+) {
+  // todo: when rewriting this build script to Kotlin, make this function create a task
+  def fontsPath = "src/main/resources/fonts"
+  def requiredFonts = originalToDest.values().stream().map { "$fontsPath/$it" }.collect()
+
+  println("Checking $name fonts: $requiredFonts")
+
+  def haveAll = requiredFonts.stream().allMatch { project.file(it).exists() }
+
+  if (haveAll) {
+    println("$name fonts already exist, skipping download.")
+  }
+  else {
+    println("Some $name fonts are missing, downloading... If some fonts exist, they will be overwritten.")
+
+    project.file(fontsPath).mkdirs()
+
+    def url = new URL(zipUrl)
+    def tempFile = File.createTempFile("${name}-fonts", "zip")
+    url.withInputStream { i -> tempFile.withOutputStream { it << i } }
+
+    def zipFile = new ZipFile(tempFile)
+
+    originalToDest.forEach { srcPath, dest ->
+      def destFile = project.file("$fontsPath/$dest")
+
+      destFile.delete()
+      destFile.createNewFile()
+
+      destFile.withOutputStream { it << zipFile.getInputStream(zipFile.getEntry(srcPath)) }
+    }
+
+    tempFile.delete()
+
+    println("Download complete")
+  }
+
+}
+
+task downloadCjkFonts {
+  doLast {
+    downloadFontsInZip(
+      "CJK",
+      "https://noto-website-2.storage.googleapis.com/pkgs/NotoSansCJKjp-hinted.zip",
+      [
+        "NotoSansCJKjp-Regular.otf" : "CJK-R.otf",
+      ]
+    )
+  }
+}
 
 task downloadDefaultFonts {
-  def defaultFontsLink = "https://assets.ubuntu.com/v1/0cef8205-ubuntu-font-family-0.83.zip"
-
   doLast {
-    def requiredFonts = ["Default-R", "Default-RI", "Default-B", "Default-BI"].stream().map { "$fontsPath/${it}.ttf" }.collect()
-
-    println("Checking default fonts: $requiredFonts")
-
-    def haveAll = requiredFonts.stream().allMatch { project.file(it).exists() }
-
-    if (haveAll) {
-      println("Default fonts already exist, skipping download.")
-    }
-    else {
-      println("Some default fonts are missing, downloading... If some fonts exist, they will be overwritten.")
-
-      project.file(fontsPath).mkdirs()
-
-      def url = new URL(defaultFontsLink)
-      def tempFile = File.createTempFile("defaultFonts", "zip")
-      url.withInputStream { i -> tempFile.withOutputStream { it << i } }
-
-      def originalToDest = [
-        "Ubuntu-R" : "Default-R",
-        "Ubuntu-RI": "Default-RI",
-        "Ubuntu-B" : "Default-B",
-        "Ubuntu-BI": "Default-BI",
+    downloadFontsInZip(
+      "default",
+      "https://noto-website-2.storage.googleapis.com/pkgs/NotoSans-hinted.zip",
+      [
+        "NotoSans-Regular.ttf" : "Default-R.ttf",
+        "NotoSans-Italic.ttf": "Default-RI.ttf",
+        "NotoSans-Bold.ttf" : "Default-B.ttf",
+        "NotoSans-BoldItalic.ttf": "Default-BI.ttf",
       ]
-
-      def zipFile = new ZipFile(tempFile)
-
-      originalToDest.forEach { original, dest ->
-        def destFile = project.file("$fontsPath/${dest}.ttf")
-        def srcPath = "ubuntu-font-family-0.83/${original}.ttf"
-
-        destFile.delete()
-        destFile.createNewFile()
-
-        destFile.withOutputStream { it << zipFile.getInputStream(zipFile.getEntry(srcPath)) }
-      }
-
-      tempFile.delete()
-
-      println("Download complete")
-    }
+    )
   }
 }
 
 task downloadMonoFonts {
-  def monoFontsLink = "https://download.jetbrains.com/fonts/JetBrainsMono-1.0.3.zip"
-
   doLast {
-    def requiredFonts = ["Mono-R", "Mono-RI", "Mono-B", "Mono-BI"].stream().map { "$fontsPath/${it}.ttf" }.collect()
-
-    println("Checking mono fonts: $requiredFonts")
-
-    def haveAll = requiredFonts.stream().allMatch { project.file(it).exists() }
-
-    if (haveAll) {
-      println("Mono fonts already exist, skipping download.")
-    }
-    else {
-      println("Some mono fonts are missing, downloading... If some fonts exist, they will be overwritten.")
-
-      project.file(fontsPath).mkdirs()
-
-      def url = new URL(monoFontsLink)
-      def tempFile = File.createTempFile("monoFonts", "zip")
-      url.withInputStream { i -> tempFile.withOutputStream { it << i } }
-
-      def originalToDest = [
-        "JetBrainsMono-Regular"    : "Mono-R",
-        "JetBrainsMono-Italic"     : "Mono-RI",
-        "JetBrainsMono-Bold"       : "Mono-B",
-        "JetBrainsMono-Bold-Italic": "Mono-BI",
+    downloadFontsInZip(
+      "mono",
+      "https://download.jetbrains.com/fonts/JetBrainsMono-1.0.3.zip",
+      [
+        "JetBrainsMono-1.0.3/ttf/JetBrainsMono-Regular.ttf"    : "Mono-R.ttf",
+        "JetBrainsMono-1.0.3/ttf/JetBrainsMono-Italic.ttf"     : "Mono-RI.ttf",
+        "JetBrainsMono-1.0.3/ttf/JetBrainsMono-Bold.ttf"       : "Mono-B.ttf",
+        "JetBrainsMono-1.0.3/ttf/JetBrainsMono-Bold-Italic.ttf": "Mono-BI.ttf",
       ]
-
-      def zipFile = new ZipFile(tempFile)
-
-      originalToDest.forEach { original, dest ->
-        def destFile = project.file("$fontsPath/${dest}.ttf")
-        def srcPath = "JetBrainsMono-1.0.3/ttf/${original}.ttf"
-
-        destFile.delete()
-        destFile.createNewFile()
-
-        destFile.withOutputStream { it << zipFile.getInputStream(zipFile.getEntry(srcPath)) }
-      }
-
-      tempFile.delete()
-
-      println("Download complete")
-    }
+    )
   }
 }
 
 task downloadFonts {
-  dependsOn(downloadDefaultFonts, downloadMonoFonts)
+  dependsOn(downloadCjkFonts, downloadDefaultFonts, downloadMonoFonts)
 }
 
 // Modify existing task which puts resources to the target dir:

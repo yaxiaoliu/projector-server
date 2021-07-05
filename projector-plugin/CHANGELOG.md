@@ -2,6 +2,55 @@
 
 Notable changes to this project are documented in this file.
 
+# 1.4.2
+
+# Updated
+
+- Projector Server v1.1.6.
+
+# 1.4.1
+
+## Changed
+
+- Various UI changes.
+
+# Updated
+
+- Projector Server v1.1.5.
+
+# 1.4.0
+
+## Changed
+
+- Store tokens in secure storage.
+- Remove existing tokens from secure storage.
+- Simplify GUI.
+
+# Updated
+
+- Projector Server v1.1.4.
+
+# 1.3.0
+
+## Added
+
+- PRJ-402 Save connection parameters between launches.
+- PRJ-402 Support Projector server auto start.
+
+## Changed
+
+- PRJ-402 Random passwords are now generated manually by a special button.
+
+# Updated
+
+- Projector Server v1.1.3.
+
+# 1.2.3
+
+## Fixed
+
+- PRJ-430 Fix headless projector detection.
+
 # 1.2.2
 
 ## Added

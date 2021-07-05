@@ -7,3 +7,7 @@ projectorLauncher.ideaPath=/home/<USERNAME>/.local/share/JetBrains/Toolbox/apps/
 
 # If you want to use local projector-client:projector-common module, define the following property:
 useLocalProjectorClient=true
+
+# to enable connections via relay define both next variables
+#ORG_JETBRAINS_PROJECTOR_RELAY_URL=localhost
+#ORG_JETBRAINS_PROJECTOR_SERVER_ID=DEFAULT_SERVER_ID

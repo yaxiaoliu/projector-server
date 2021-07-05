@@ -21,18 +21,44 @@
  * Please contact JetBrains, Na Hrebenech II 1718/10, Prague, 14000, Czech Republic
  * if you need additional information or have any questions.
  */
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.project.DumbAwareAction
 
-class ActivateAction : DumbAwareAction() {
+package org.jetbrains.projector.plugin.actions
+
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.PlatformDataKeys
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.ui.DialogWrapper
+import org.jetbrains.projector.plugin.ProjectorService
+import org.jetbrains.projector.plugin.Session
+import org.jetbrains.projector.plugin.isProjectorDisabled
+import org.jetbrains.projector.plugin.isProjectorStopped
+import org.jetbrains.projector.plugin.ui.SessionDialog
+
+class EnableAction : DumbAwareAction() {
 
   override fun actionPerformed(e: AnActionEvent) {
-    ProjectorService.activate()
+    val project = PlatformDataKeys.PROJECT.getData(e.dataContext)
+    val sessionDialog = SessionDialog(project)
+    sessionDialog.pack()
+    sessionDialog.show()
+
+    if (sessionDialog.exitCode == DialogWrapper.OK_EXIT_CODE) {
+      ProjectorService.enable(Session(sessionDialog.listenAddress,
+                                      sessionDialog.listenPort,
+                                      sessionDialog.rwToken,
+                                      sessionDialog.roToken,
+                                      sessionDialog.confirmConnection,
+                                      sessionDialog.autostart))
+    }
+
+    sessionDialog.cancelResolverRequests()
   }
 
   override fun update(e: AnActionEvent) {
-    val state = ProjectorService.enabled == EnabledState.NO_VM_OPTIONS_AND_DISABLED
-    e.presentation.isEnabled = state
-    e.presentation.isVisible = state
+    e.presentation.isEnabledAndVisible = isProjectorDisabled() || isProjectorStopped()
+  }
+
+  companion object {
+    const val ID = "projector.enable"
   }
 }

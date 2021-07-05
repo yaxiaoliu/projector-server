@@ -24,15 +24,13 @@
 package org.jetbrains.projector.agent
 
 import com.sun.tools.attach.VirtualMachine
-import org.jetbrains.projector.agent.GraphicsTransformer.Companion.DRAW_HANDLER_PACKAGE
+import org.jetbrains.projector.agent.GraphicsTransformer.Companion.DRAW_HANDLER_CLASS
+import java.beans.PropertyChangeListener
 import java.lang.management.ManagementFactory
 import java.lang.reflect.Method
+import java.util.*
 
 public object AgentLauncher {
-
-  private var getClientListMethod: Method? = null
-  private var disconnectAllMethod: Method? = null
-  private var disconnectByIpMethod: Method? = null
 
   private fun checkProperty(name: String, expected: String) {
     val actual = System.getProperty(name)
@@ -73,34 +71,66 @@ public object AgentLauncher {
   }
 
   private fun getHandlerClass(): Class<*> {
-    return ClassLoader.getSystemClassLoader().loadClass("$DRAW_HANDLER_PACKAGE")
+    return ClassLoader.getSystemClassLoader().loadClass(DRAW_HANDLER_CLASS)
   }
+
+  @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")  // KTIJ-18982
+  private val getClientListMethod by lazy { getHandlerClass().getMethod("getClientList")!! }
 
   @JvmStatic
   public fun getClientList(): Array<Array<String?>> {
-    if (getClientListMethod == null) {
-      getClientListMethod = getHandlerClass().getMethod("getClientList")
-    }
-    val result = getClientListMethod?.invoke(null) ?: emptyArray<Array<String?>>()
     @Suppress("UNCHECKED_CAST")
-    return result as Array<Array<String?>>
+    return getClientListMethod.invoke(null) as Array<Array<String?>>
   }
+
+  @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")  // KTIJ-18982
+  private val disconnectAllMethod by lazy { getHandlerClass().getMethod("disconnectAll")!! }
 
   @JvmStatic
   public fun disconnectAll() {
-    if (disconnectAllMethod == null) {
-      disconnectAllMethod = getHandlerClass().getMethod("disconnectAll")
-    }
-    disconnectAllMethod?.invoke(null)
+    disconnectAllMethod.invoke(null)
   }
+
+  @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")  // KTIJ-18982
+  private val disconnectByIpMethod by lazy { getHandlerClass().getMethod("disconnectByIp", String::class.java)!! }
 
   @JvmStatic
   public fun disconnectByIp(ip: String) {
-    if (disconnectByIpMethod == null) {
-      disconnectByIpMethod = getHandlerClass().getMethod("disconnectByIp", String::class.java)
-    }
-    disconnectByIpMethod?.invoke(null, ip)
+    disconnectByIpMethod.invoke(null, ip)
   }
+
+  @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")  // KTIJ-18982
+  private val addClientsObserverMethod by lazy { getHandlerClass().getMethod("addClientsObserver", PropertyChangeListener::class.java)!! }
+
+  @JvmStatic
+  public fun addClientsObserver(listener: PropertyChangeListener) {
+    addClientsObserverMethod.invoke(null, listener)
+  }
+
+  @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")  // KTIJ-18982
+  private val removeClientsObserverMethod by lazy {
+    getHandlerClass().getMethod("removeClientsObserver", PropertyChangeListener::class.java)!!
+  }
+
+  @JvmStatic
+  public fun removeClientsObserver(listener: PropertyChangeListener) {
+    removeClientsObserverMethod.invoke(null, listener)
+  }
+
+  @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")  // KTIJ-18982
+  private val startServerMethod by lazy { getHandlerClass().getMethod("startServer")!! }
+
+  public fun startServer() {
+    startServerMethod.invoke(null)
+  }
+
+  @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")  // KTIJ-18982
+  private val stopServerMethod by lazy { getHandlerClass().getMethod("stopServer", Int::class.java)!! }
+
+  public fun stopServer(timeout: Int) {
+    stopServerMethod.invoke(null, timeout)
+  }
+
 
   @JvmStatic
   public fun main(args: Array<String>) {

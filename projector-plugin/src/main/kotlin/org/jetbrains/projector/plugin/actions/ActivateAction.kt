@@ -21,39 +21,25 @@
  * Please contact JetBrains, Na Hrebenech II 1718/10, Prague, 14000, Czech Republic
  * if you need additional information or have any questions.
  */
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.PlatformDataKeys
-import com.intellij.openapi.project.DumbAwareAction
-import com.intellij.openapi.ui.DialogWrapper
 
-class EnableAction : DumbAwareAction() {
+package org.jetbrains.projector.plugin.actions
+
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.project.DumbAwareAction
+import org.jetbrains.projector.plugin.ProjectorService
+import org.jetbrains.projector.plugin.isActivationNeeded
+
+class ActivateAction : DumbAwareAction() {
 
   override fun actionPerformed(e: AnActionEvent) {
-    val project = PlatformDataKeys.PROJECT.getData(e.dataContext)
-    val sessionDialog = SessionDialog(project)
-    sessionDialog.pack()
-    sessionDialog.show()
-
-    if (sessionDialog.exitCode == DialogWrapper.OK_EXIT_CODE) {
-      ProjectorService.currentSession = Session(sessionDialog.listenAddress,
-                                                sessionDialog.listenPort,
-                                                sessionDialog.rwToken,
-                                                sessionDialog.roToken,
-                                                sessionDialog.confirmConnection)
-      ProjectorService.enable()
-    }
-
-    sessionDialog.cancelResolverRequests()
+    ProjectorService.activate()
   }
 
   override fun update(e: AnActionEvent) {
-      val state = !isProjectorDetected() && ProjectorService.enabled == EnabledState.HAS_VM_OPTIONS_AND_DISABLED
-      e.presentation.isEnabledAndVisible = state
+    e.presentation.isEnabledAndVisible = isActivationNeeded()
   }
 
-  private fun isProjectorDetected() = ProcessHandle.current().info().commandLine().get().contains(PROJECTOR_MARK)
-
   companion object {
-    private const val PROJECTOR_MARK = "-Dorg.jetbrains.projector.server.classToLaunch"
+    const val ID = "projector.activate"
   }
 }

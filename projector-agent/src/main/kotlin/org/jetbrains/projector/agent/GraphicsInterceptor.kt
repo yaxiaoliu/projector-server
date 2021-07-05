@@ -32,12 +32,16 @@ import org.jetbrains.projector.common.protocol.toClient.ServerWindowEvent
 import org.jetbrains.projector.server.ProjectorServer
 import org.jetbrains.projector.server.core.util.unprotect
 import org.jetbrains.projector.server.service.ProjectorDrawEventQueue
+import org.jetbrains.projector.server.service.ProjectorFontProvider
 import org.jetbrains.projector.util.logging.Logger
 import sun.awt.NullComponentPeer
 import sun.java2d.SunGraphics2D
 import java.awt.*
 import java.awt.peer.ComponentPeer
+import java.beans.PropertyChangeListener
+import java.util.*
 import javax.swing.JComponent
+import kotlin.collections.HashSet
 
 internal object GraphicsInterceptor {
   private var commands = mutableListOf<ServerWindowEvent>()
@@ -61,16 +65,21 @@ internal object GraphicsInterceptor {
     // todo: make it work with dynamic agent
     //setupAgentSystemProperties()
     //setupAgentSingletons()
+    ProjectorFontProvider.isAgent = true
   }
 
   @Suppress("unused", "PLATFORM_CLASS_MAPPED_TO_KOTLIN",
             "UNUSED_PARAMETER")  // Integer is needed because this function is used via reflection
   @JvmStatic
   fun beginPaintToOffscreen(comp: JComponent, x: Integer, y: Integer, w: Integer, h: Integer) {
+    if (server.isStopped()) {
+      return
+    }
+
     paintToOffscreenInProgress = true
 
     val parentWindow = getParentWindow(comp)
-    val pWindow = pWindows.getOrPut(parentWindow.id()) { PWindow(parentWindow) }
+    val pWindow = pWindows.getOrPut(parentWindow.id()) { PWindow(parentWindow, isAgent = true) }
 
     currentQueue = queues.getOrPut(parentWindow.id()) {
       ProjectorDrawEventQueue.create(ServerDrawCommandsEvent.Target.Onscreen(pWindow.id))
@@ -119,9 +128,34 @@ internal object GraphicsInterceptor {
     server.disconnectByIp(ip)
   }
 
+
+  @Suppress("unused")
+  @JvmStatic
+  fun startServer() {
+    server.start()
+  }
+
+  @Suppress("unused")
+  @JvmStatic
+  fun stopServer(timeout: Int) {
+    server.stop(timeout)
+  }
+
+
+  @Suppress("unused")
+  @JvmStatic
+  fun addClientsObserver(listener: PropertyChangeListener) = server.addClientsObserver(listener)
+
+  @Suppress("unused")
+  @JvmStatic
+  fun removeClientsObserver(listener: PropertyChangeListener) = server.removeClientsObserver(listener)
+
   @Suppress("unused")
   @JvmStatic
   fun endPaintToOffscreen() {
+    if (server.isStopped()) {
+      return
+    }
     currentQueue?.commands?.add(commands) ?: logger.debug { "currentQueue == null" }
     commands = mutableListOf()
     paintToOffscreenInProgress = false

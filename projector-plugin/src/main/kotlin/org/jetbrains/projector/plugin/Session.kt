@@ -21,50 +21,61 @@
  * Please contact JetBrains, Na Hrebenech II 1718/10, Prague, 14000, Czech Republic
  * if you need additional information or have any questions.
  */
-import org.jetbrains.projector.server.ProjectorServer
+
+package org.jetbrains.projector.plugin
+
+import com.intellij.openapi.project.Project
 
 class Session(
   host: String,
-  val port: String,
+  port: String,
   rwToken: String?,
   roToken: String?,
   confirmConnection: Boolean,
+  autostart: Boolean,
 ) {
-  var host: String = host
+  var host
+    get() = ProjectorService.host
     set(value) {
-      field = value
       ProjectorService.host = value
     }
 
-  var rwToken: String?
-    get() = getToken(ProjectorServer.TOKEN_ENV_NAME)
-    set(value) = setToken(ProjectorServer.TOKEN_ENV_NAME, value)
-
-  var roToken: String?
-    get() = getToken(ProjectorServer.RO_TOKEN_ENV_NAME)
-    set(value) = setToken(ProjectorServer.RO_TOKEN_ENV_NAME, value)
-
-  var confirmConnection: Boolean
-    get() = System.getProperty(ProjectorServer.ENABLE_CONNECTION_CONFIRMATION) == "true"
+  var port
+    get() = ProjectorService.port
     set(value) {
-      System.setProperty(ProjectorServer.ENABLE_CONNECTION_CONFIRMATION, if (value) "true" else "false")
+      ProjectorService.port = value
+    }
+
+  var rwToken
+    get() = ProjectorService.rwToken
+    set(value) {
+      ProjectorService.rwToken = value
+    }
+
+  var roToken
+    get() = ProjectorService.roToken
+    set(value) {
+      ProjectorService.roToken = value
+    }
+
+  var confirmConnection
+    get() = ProjectorService.confirmConnection
+    set(value) {
+      ProjectorService.confirmConnection = value
+    }
+
+  var autostart
+    get() = ProjectorService.autostart
+    set(value) {
+      ProjectorService.autostart = value
     }
 
   init {
-    System.setProperty(ProjectorServer.PORT_PROPERTY_NAME, port)
-    System.setProperty(ProjectorServer.HOST_PROPERTY_NAME, host)
-    this.rwToken = rwToken
-    this.roToken = roToken
-    this.confirmConnection = confirmConnection
-  }
-
-  private fun getToken(tokenPropertyName: String): String? = System.getProperty(tokenPropertyName)
-  private fun setToken(tokenPropertyName: String, token: String?) {
-    if (token == null) {
-      System.clearProperty(tokenPropertyName)
-    }
-    else {
-      System.setProperty(tokenPropertyName, token)
-    }
+    ProjectorService.host = host
+    ProjectorService.port = port
+    ProjectorService.rwToken = rwToken
+    ProjectorService.roToken = roToken
+    ProjectorService.confirmConnection = confirmConnection
+    ProjectorService.autostart = autostart
   }
 }

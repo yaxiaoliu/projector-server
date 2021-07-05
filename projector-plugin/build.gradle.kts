@@ -21,13 +21,14 @@
  * Please contact JetBrains, Na Hrebenech II 1718/10, Prague, 14000, Czech Republic
  * if you need additional information or have any questions.
  */
+import java.io.File
+import java.nio.file.Paths
 
 plugins {
   kotlin("jvm")
   id("org.jetbrains.intellij")
 }
 
-version = "1.2.2"
 
 val projectorClientVersion: String by project
 
@@ -43,4 +44,32 @@ intellij {
 
 (tasks["runIde"] as JavaExec).apply {
   jvmArgs = jvmArgs.orEmpty() + listOf("-Djdk.attach.allowAttachSelf=true", "-Dswing.bufferPerWindow=false")
+}
+
+abstract class GenerateVersionsFile: DefaultTask() {
+  private val filePath = "src/main/resources/META-INF/pluginVersions.txt"
+  @get:Input
+  abstract val agentVersion: Property<String>
+
+  @TaskAction
+  fun generateVersions() {
+    val fullPath = Paths.get(project.buildFile.parent, filePath)
+    val f = fullPath.toFile()
+    f.printWriter().use {
+      it.println(getContent())
+    }
+  }
+
+  private fun getContent(): String {
+    val versions = listOf("agentVersion=${agentVersion.get()}")
+    return versions.joinToString("\n")
+  }
+}
+
+val versions = task<GenerateVersionsFile>("versions") {
+  agentVersion.set(project(":projector-agent").version.toString())
+}
+
+tasks.processResources {
+  dependsOn(versions)
 }

@@ -31,7 +31,6 @@ import org.jetbrains.projector.awt.PClipboard
 import org.jetbrains.projector.awt.PWindow
 import org.jetbrains.projector.awt.font.PFontManager
 import org.jetbrains.projector.awt.image.PGraphics2D
-import org.jetbrains.projector.awt.image.PGraphicsDevice
 import org.jetbrains.projector.awt.image.PGraphicsEnvironment
 import org.jetbrains.projector.awt.image.PVolatileImage
 import org.jetbrains.projector.awt.peer.PComponentPeer
@@ -59,6 +58,7 @@ import org.jetbrains.projector.server.core.protocol.HandshakeTypesSelector
 import org.jetbrains.projector.server.core.protocol.KotlinxJsonToClientHandshakeEncoder
 import org.jetbrains.projector.server.core.protocol.KotlinxJsonToServerHandshakeDecoder
 import org.jetbrains.projector.server.core.util.*
+import org.jetbrains.projector.server.core.websocket.*
 import org.jetbrains.projector.server.idea.CaretInfoUpdater
 import org.jetbrains.projector.server.service.ProjectorAwtInitializer
 import org.jetbrains.projector.server.service.ProjectorDrawEventQueue
@@ -72,62 +72,103 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
 import java.awt.datatransfer.UnsupportedFlavorException
 import java.awt.peer.ComponentPeer
+import java.beans.PropertyChangeEvent
+import java.beans.PropertyChangeListener
+import java.lang.Thread.sleep
 import java.net.InetAddress
-import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.locks.ReentrantLock
 import javax.swing.SwingUtilities
+import kotlin.collections.ArrayList
 import kotlin.concurrent.thread
+import kotlin.concurrent.withLock
 import kotlin.math.roundToLong
+import kotlin.properties.Delegates
 import java.awt.Point as AwtPoint
 
 class ProjectorServer private constructor(
-  host: InetAddress,
-  port: Int,
   private val laterInvokator: LaterInvokator,
   private val isAgent: Boolean,
 ) {
+  private lateinit var httpWsTransport: HttpWsTransport
 
-  private val httpWsServer = object : ProjectorHttpWsServer(host, port) {
-
-    override fun onStart() {
-      logger.info { "Server started on host $host and port $port" }
-
-      updateThread = thread(isDaemon = true) {
-        // TODO: remove this thread: encapsulate the logic in an extracted class and maybe even don't use threads but coroutines' channels
-        logger.debug { "Daemon thread starts" }
-        while (!Thread.currentThread().isInterrupted) {
-          try {
-            val dataToSend = createDataToSend()  // creating data even if there are no clients to avoid memory leaks
-
-            sendPictures(dataToSend)
-
-            Thread.sleep(10)
-          }
-          catch (ex: InterruptedException) {
-            Thread.currentThread().interrupt()
-          }
-          catch (t: Throwable) {
-            logger.error(t) { "Unhandled in daemon thread has happened" }
-          }
-        }
-        logger.debug { "Daemon thread finishes" }
+  val wasStarted : Boolean
+    get() {
+      while (!::httpWsTransport.isInitialized) {
+        sleep(10)
       }
 
-      caretInfoUpdater.start()
+      return httpWsTransport.wasStarted
     }
 
-    override fun onWsMessage(connection: WebSocket, message: ByteBuffer) {
+  private lateinit var updateThread: Thread
+
+  private val caretInfoQueue = ConcurrentLinkedQueue<ServerCaretInfoChangedEvent.CaretInfoChange>()
+
+  private val caretInfoUpdater = CaretInfoUpdater { caretInfo ->
+    caretInfoQueue.add(caretInfo)
+  }
+
+  private val markdownQueue = ConcurrentLinkedQueue<ServerMarkdownEvent>()
+
+  private var windowColorsEvent: ServerWindowColorsEvent? = null
+
+  private val ideaColors = IdeColors { colors ->
+    windowColorsEvent = ServerWindowColorsEvent(colors)
+  }
+
+  init {
+    PanelUpdater.showCallback = { id, show ->
+      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownShowEvent(id, show))
+    }
+    PanelUpdater.resizeCallback = { id, size ->
+      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownResizeEvent(id, size.toCommonIntSize()))
+    }
+    PanelUpdater.moveCallback = { id, point ->
+      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownMoveEvent(id, point.shift(PGraphicsEnvironment.defaultDevice.clientShift)))
+    }
+    PanelUpdater.disposeCallback = { id ->
+      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownDisposeEvent(id))
+    }
+    PanelUpdater.placeToWindowCallback = { id, rootComponent ->
+      rootComponent?.let {
+        val peer = AWTAccessor.getComponentAccessor().getPeer<ComponentPeer>(it)
+
+        if (peer !is PComponentPeer) {
+          return@let
+        }
+
+        markdownQueue.add(ServerMarkdownEvent.ServerMarkdownPlaceToWindowEvent(id, peer.pWindow.id))
+      }
+    }
+    PanelUpdater.setHtmlCallback = { id, html ->
+      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownSetHtmlEvent(id, html))
+    }
+    PanelUpdater.setCssCallback = { id, css ->
+      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownSetCssEvent(id, css))
+    }
+    PanelUpdater.scrollCallback = { id, offset ->
+      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownScrollEvent(id, offset))
+    }
+    PDesktopPeer.browseUriCallback = { link ->
+      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownBrowseUriEvent(link))
+    }
+  }
+
+  private fun initTransport(): HttpWsTransport {
+    val builder = createTransportBuilder()
+
+    builder.onWsMessageByteBuffer = { _, message ->
       throw RuntimeException("Unsupported message type: $message")
     }
 
-    override fun onWsMessage(connection: WebSocket, message: String) {
+    builder.onWsMessageString = { connection, message ->
       when (val clientSettings = connection.getAttachment<ClientSettings>()!!) {
         is ConnectedClientSettings -> setUpClient(connection, clientSettings, message)
 
         is SetUpClientSettings -> {
           // this means that the client has loaded fonts and is ready to draw
-
           connection.setAttachment(ReadyClientSettings(
             clientSettings.connectionMillis,
             clientSettings.address,
@@ -156,88 +197,74 @@ class ProjectorServer private constructor(
       }
     }
 
-    override fun onWsClose(connection: WebSocket) {
+    builder.onWsClose = { connection ->
       // todo: we need more informative message, add parameters to this method inside the superclass
-      val clientSettings = connection.getAttachment<ClientSettings>()!!
-      val connectionTime = (System.currentTimeMillis() - clientSettings.connectionMillis) / 1000.0
-      logger.info { "${clientSettings.address} disconnected, was connected for ${connectionTime.roundToLong()} s." }
+      updateClientsCount()
+      connection.getAttachment<ClientSettings>()
+        ?.let { clientSettings ->
+          val connectionTime = (System.currentTimeMillis() - clientSettings.connectionMillis) / 1000.0
+          logger.info { "${clientSettings.address} disconnected, was connected for ${connectionTime.roundToLong()} s." }
+        } ?: logger.info {
+        val address = connection.remoteSocketAddress?.address?.hostAddress
+        "Client from address $address is disconnected. This client hasn't clientSettings. " +
+        "This usually happens when the handshake stage didn't have time to be performed " +
+        "(so it seems the client has been connected for a very short time)"
+      }
     }
 
-    override fun onWsOpen(connection: WebSocket) {
+    builder.onWsOpen = { connection ->
       val address = connection.remoteSocketAddress?.address?.hostAddress
       connection.setAttachment(ConnectedClientSettings(connectionMillis = System.currentTimeMillis(), address = address))
       logger.info { "$address connected." }
     }
 
-    override fun onError(connection: WebSocket?, e: Exception) {
+    builder.onError = { _, e ->
       logger.error(e) { "onError" }
     }
 
-    override fun getMainWindows(): List<MainWindow> = ProjectorServer.getMainWindows().map {
-      MainWindow(
-        title = it.title,
-        pngBase64Icon = it.icons
-          ?.firstOrNull()
-          ?.let { imageId -> ProjectorImageCacher.getImage(imageId as ImageId) as? ImageData.PngBase64 }
-          ?.pngBase64,
-      )
+    return builder.build()
+  }
+
+  private val clientsObservers: MutableList<PropertyChangeListener> = Collections.synchronizedList(ArrayList<PropertyChangeListener>())
+  fun addClientsObserver(listener: PropertyChangeListener) = clientsObservers.add(listener)
+  fun removeClientsObserver(listener: PropertyChangeListener) = clientsObservers.remove(listener)
+
+  private val clientsCountLock = ReentrantLock()
+  private var clientsCount: Int by Delegates.observable(0) { _, _, newValue ->
+    clientsObservers.forEach { listener ->
+      listener.propertyChange(PropertyChangeEvent(this, "clientsCount", null, newValue))
     }
   }
 
-  val wasStarted: Boolean by httpWsServer::wasStarted
+  private fun updateClientsCount() {
+    var count = 0
+    httpWsTransport.forEachOpenedConnection {
+      ++count
+    }
 
-  private lateinit var updateThread: Thread
-
-  private val caretInfoQueue = ConcurrentLinkedQueue<ServerCaretInfoChangedEvent.CaretInfoChange>()
-
-  private val caretInfoUpdater = CaretInfoUpdater { caretInfo ->
-    caretInfoQueue.add(caretInfo)
+    clientsCountLock.withLock { clientsCount = count }
   }
 
-  private val markdownQueue = ConcurrentLinkedQueue<ServerMarkdownEvent>()
-
-  private var windowColorsEvent: ServerWindowColorsEvent? = null
-
-  private val ideaColors = IdeColors { colors ->
-    windowColorsEvent = ServerWindowColorsEvent(colors)
-  }
-
-  init {
-    PanelUpdater.showCallback = { id, show ->
-      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownShowEvent(id, show))
-    }
-    PanelUpdater.resizeCallback = { id, size ->
-      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownResizeEvent(id, size.toCommonIntSize()))
-    }
-    PanelUpdater.moveCallback = { id, point ->
-      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownMoveEvent(id, point.shift(PGraphicsDevice.clientShift)))
-    }
-    PanelUpdater.disposeCallback = { id ->
-      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownDisposeEvent(id))
-    }
-    PanelUpdater.placeToWindowCallback = { id, rootComponent ->
-      rootComponent?.let {
-        val peer = AWTAccessor.getComponentAccessor().getPeer<ComponentPeer>(it)
-
-        if (peer !is PComponentPeer) {
-          return@let
+  private fun createUpdateThread(): Thread = thread(isDaemon = true) {
+    // TODO: remove this thread: encapsulate the logic in an extracted class and maybe even don't use threads but coroutines' channels
+    logger.debug { "Daemon thread starts" }
+    while (!Thread.currentThread().isInterrupted) {
+      try {
+        if (::httpWsTransport.isInitialized) {
+          val dataToSend = createDataToSend()  // creating data even if there are no clients to avoid memory leaks
+          sendPictures(dataToSend)
         }
 
-        markdownQueue.add(ServerMarkdownEvent.ServerMarkdownPlaceToWindowEvent(id, peer.pWindow.id))
+        sleep(10)
+      }
+      catch (ex: InterruptedException) {
+        Thread.currentThread().interrupt()
+      }
+      catch (t: Throwable) {
+        logger.error(t) { "Unhandled in daemon thread has happened" }
       }
     }
-    PanelUpdater.setHtmlCallback = { id, html ->
-      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownSetHtmlEvent(id, html))
-    }
-    PanelUpdater.setCssCallback = { id, css ->
-      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownSetCssEvent(id, css))
-    }
-    PanelUpdater.scrollCallback = { id, offset ->
-      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownScrollEvent(id, offset))
-    }
-    PDesktopPeer.browseUriCallback = { link ->
-      markdownQueue.add(ServerMarkdownEvent.ServerMarkdownBrowseUriEvent(link))
-    }
+    logger.debug { "Daemon thread finishes" }
   }
 
   @OptIn(ExperimentalStdlibApi::class)
@@ -273,7 +300,7 @@ class ProjectorServer private constructor(
           icons = window.icons?.map { it as ImageId },
           isShowing = window.target.isShowing,
           zOrder = i,
-          bounds = window.target.shiftBounds(PGraphicsDevice.clientShift),
+          bounds = window.target.shiftBounds(PGraphicsEnvironment.defaultDevice.clientShift),
           headerHeight = window.headerHeight,
           cursorType = window.cursor?.type?.toCursorType(),
           resizable = window.resizable,
@@ -325,7 +352,7 @@ class ProjectorServer private constructor(
       is ClientResizeEvent -> SwingUtilities.invokeLater { resize(message.size.width, message.size.height) }
 
       is ClientMouseEvent -> SwingUtilities.invokeLater {
-        val shiftedMessage = message.shift(PGraphicsDevice.clientShift)
+        val shiftedMessage = message.shift(PGraphicsEnvironment.defaultDevice.clientShift)
 
         PMouseInfoPeer.lastMouseCoords.setLocation(shiftedMessage.x, shiftedMessage.y)
 
@@ -341,7 +368,7 @@ class ProjectorServer private constructor(
       }
 
       is ClientWheelEvent -> SwingUtilities.invokeLater {
-        val shiftedMessage = message.shift(PGraphicsDevice.clientShift)
+        val shiftedMessage = message.shift(PGraphicsEnvironment.defaultDevice.clientShift)
         PMouseInfoPeer.lastMouseCoords.setLocation(shiftedMessage.x, shiftedMessage.y)
 
         val window = PWindow.getWindow(message.windowId)?.target
@@ -374,11 +401,11 @@ class ProjectorServer private constructor(
         }
 
       is ClientRawKeyEvent -> SwingUtilities.invokeLater {
-          laterInvokator(message.toAwtKeyEvent(
-            connectionMillis = clientSettings.connectionMillis,
-            target = focusOwnerOrTarget(PWindow.windows.last().target),
-          ))
-        }
+        laterInvokator(message.toAwtKeyEvent(
+          connectionMillis = clientSettings.connectionMillis,
+          target = focusOwnerOrTarget(PWindow.windows.last().target),
+        ))
+      }
 
       is ClientRequestImageDataEvent -> {
         val imageData = ProjectorImageCacher.getImage(message.imageId) ?: ImageData.Empty
@@ -419,14 +446,10 @@ class ProjectorServer private constructor(
 
       is ClientOpenLinkEvent -> PanelUpdater.openInExternalBrowser(message.link)
 
-      is ClientSetKeymapEvent -> if (isAgent) {
-        logger.info { "Client keymap was ignored (agent mode)!" }
-      }
-      else if (getProperty(ENABLE_AUTO_KEYMAP_SETTING)?.toBoolean() == false) {
-        logger.info { "Client keymap was ignored (property specified)!" }
-      }
-      else {
-        KeymapSetter.setKeymap(message.keymap)
+      is ClientSetKeymapEvent -> when {
+        isAgent -> logger.info { "Client keymap was ignored (agent mode)!" }
+        getProperty(ENABLE_AUTO_KEYMAP_SETTING)?.toBoolean() == false -> logger.info { "Client keymap was ignored (property specified)!" }
+        else -> KeymapSetter.setKeymap(message.keymap)
       }
 
       is ClientWindowMoveEvent -> {
@@ -436,6 +459,12 @@ class ProjectorServer private constructor(
       is ClientWindowResizeEvent -> {
         SwingUtilities.invokeLater {
           PWindow.getWindow(message.windowId)?.apply { this.resize(message.deltaX, message.deltaY, message.direction.toDirection()) }
+        }
+      }
+
+      is ClientWindowSetBoundsEvent -> {
+        SwingUtilities.invokeLater {
+          PWindow.getWindow(message.windowId)?.apply { with(message.bounds) { this@apply.setBounds(x, y, width, height) } }
         }
       }
 
@@ -561,12 +590,17 @@ class ProjectorServer private constructor(
     )
 
     if (hasWriteAccess) {
-      with(toServerHandshakeEvent.initialSize) { resize(width, height) }
+      PGraphicsEnvironment.clientDoesWindowManagement = toServerHandshakeEvent.clientDoesWindowManagement
+      PGraphicsEnvironment.setupDisplays(
+        toServerHandshakeEvent.displays.map { Rectangle(it.x, it.y, it.width, it.height) to it.scaleFactor })
+      with(toServerHandshakeEvent.displays[0]) { resize(width, height) }
     }
+
+    updateClientsCount()
   }
 
   private fun sendPictures(dataToSend: List<ServerEvent>) {
-    httpWsServer.forEachOpenedConnection { client ->
+    httpWsTransport.forEachOpenedConnection { client ->
       val readyClientSettings = client.getAttachment<ClientSettings?>() as? ReadyClientSettings ?: return@forEachOpenedConnection
 
       val compressed = with(readyClientSettings.setUpClientData) {
@@ -598,31 +632,33 @@ class ProjectorServer private constructor(
 
     if (hasDifferentWindowEvents) {
       previousWindowEvents = set
-
-      return true
     }
 
-    return false
+    return hasDifferentWindowEvents
   }
 
   fun start() {
-    httpWsServer.start()
+    updateThread = createUpdateThread()
+    caretInfoUpdater.start()
+    httpWsTransport = initTransport()
+    httpWsTransport.start()
   }
 
   @JvmOverloads
   fun stop(timeout: Int = 0) {
-    httpWsServer.stop(timeout)
+    httpWsTransport.stop(timeout)
+    caretInfoUpdater.stop()
 
     if (::updateThread.isInitialized) {
       updateThread.interrupt()
     }
-
-    caretInfoUpdater.stop()
   }
+
+  fun isStopped() = !::updateThread.isInitialized || updateThread.state == Thread.State.TERMINATED
 
   fun getClientList(): Array<Array<String?>> {
     val s = arrayListOf<Array<String?>>()
-    httpWsServer.forEachOpenedConnection {
+    httpWsTransport.forEachOpenedConnection {
       val remoteAddress = it.remoteSocketAddress?.address
       if (remoteAddress != null) {
         s.add(arrayOf(
@@ -635,13 +671,13 @@ class ProjectorServer private constructor(
   }
 
   fun disconnectAll() {
-    httpWsServer.forEachOpenedConnection {
+    httpWsTransport.forEachOpenedConnection {
       it.close()
     }
   }
 
   fun disconnectByIp(ip: String) {
-    httpWsServer.forEachOpenedConnection {
+    httpWsTransport.forEachOpenedConnection {
       if (it.remoteSocketAddress?.address?.hostAddress == ip) {
         it.close()
       }
@@ -667,6 +703,11 @@ class ProjectorServer private constructor(
     }
 
     private fun calculateMainWindowShift() {
+      if (PGraphicsEnvironment.clientDoesWindowManagement) {
+        PGraphicsEnvironment.defaultDevice.clientShift.setLocation(0, 0)
+        return
+      }
+
       getMainWindows().firstOrNull()?.target?.let { window ->
         synchronized(window.treeLock) {
           var x = 0.0
@@ -684,7 +725,7 @@ class ProjectorServer private constructor(
             y += it.y
           }
 
-          PGraphicsDevice.clientShift.setLocation(x, y)
+          PGraphicsEnvironment.defaultDevice.clientShift.setLocation(x, y)
         }
       }
     }
@@ -692,13 +733,17 @@ class ProjectorServer private constructor(
     private fun resize(width: Int, height: Int) {
       val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
       if (ge is PGraphicsEnvironment) {
-        ge.setSize(width, height)
+        ge.setDefaultDeviceSize(width, height)
       }
+
+      calculateMainWindowShift()  // trigger manual update of clientShift because it can be outdated at the moment
+
+      if (PGraphicsEnvironment.clientDoesWindowManagement) return
 
       getMainWindows().map(PWindow::target).let { mainWindows ->
         SwingUtilities.invokeLater {
           mainWindows.forEach {
-            val point = AwtPoint(PGraphicsDevice.clientShift)
+            val point = AwtPoint(PGraphicsEnvironment.defaultDevice.clientShift)
             var widthWithInsets = width
             var heightWithInsets = height
             if (it is Frame) {
@@ -720,6 +765,43 @@ class ProjectorServer private constructor(
       }
     }
 
+    private fun createTransportBuilder(): TransportBuilder {
+      val builders = arrayListOf<TransportBuilder>()
+
+      val relayUrl = getProperty(RELAY_PROPERTY_NAME)
+      val serverId = getProperty(SERVER_ID_PROPERTY_NAME)
+
+      if (relayUrl != null && serverId != null) {
+        val scheme = when (getProperty(RELAY_USE_WSS)?.toBoolean() ?: true) {
+          false -> "ws"
+          true -> "wss"
+        }
+
+        logger.info { "${ProjectorServer::class.simpleName} connecting to relay $relayUrl with serverId $serverId" }
+        builders.add(HttpWsClientBuilder("$scheme://$relayUrl", serverId))
+      }
+
+      val host = getEnvHost()
+      val port = getEnvPort()
+      logger.info { "${ProjectorServer::class.simpleName} is starting on host $host and port $port" }
+
+      val serverBuilder = HttpWsServerBuilder(host, port)
+      serverBuilder.getMainWindows = {
+        getMainWindows().map {
+          MainWindow(
+            title = it.title,
+            pngBase64Icon = it.icons
+              ?.firstOrNull()
+              ?.let { imageId -> ProjectorImageCacher.getImage(imageId as ImageId) as? ImageData.PngBase64 }
+              ?.pngBase64,
+          )
+        }
+      }
+
+      builders.add(serverBuilder)
+      return MultiTransportBuilder(builders)
+    }
+
     @JvmStatic
     fun startServer(isAgent: Boolean, initializer: Runnable): ProjectorServer {
       loggerFactory = { DelegatingJvmLogger(it) }
@@ -734,20 +816,11 @@ class ProjectorServer private constructor(
 
       SettingsInitializer.addTaskToInitializeIdea(PGraphics2D.defaultAa)
 
-      val host = getEnvHost()
-      val port = getEnvPort()
-
-      logger.info { "${ProjectorServer::class.simpleName} is starting on host $host and port $port" }
       if (ENABLE_BIG_COLLECTIONS_CHECKS) {
         logger.info { "Currently collections will log size if it exceeds $BIG_COLLECTIONS_CHECKS_START_SIZE" }
       }
 
-      return ProjectorServer(host, port, LaterInvokator.defaultLaterInvokator, isAgent).also {
-        val message = when (val hint = setSsl(it.httpWsServer::setWebSocketFactory)) {
-          null -> "WebSocket SSL is disabled"
-          else -> "WebSocket SSL is enabled: $hint"
-        }
-        logger.info { message }
+      return ProjectorServer(LaterInvokator.defaultLaterInvokator, isAgent).also {
         it.start()
       }
     }
@@ -755,9 +828,12 @@ class ProjectorServer private constructor(
     const val ENABLE_PROPERTY_NAME = "org.jetbrains.projector.server.enable"
     const val HOST_PROPERTY_NAME = "org.jetbrains.projector.server.host"
     const val PORT_PROPERTY_NAME = "org.jetbrains.projector.server.port"
-    const val DEFAULT_PORT = 8887
+    private const val DEFAULT_PORT = 8887
     const val TOKEN_ENV_NAME = "ORG_JETBRAINS_PROJECTOR_SERVER_HANDSHAKE_TOKEN"
     const val RO_TOKEN_ENV_NAME = "ORG_JETBRAINS_PROJECTOR_SERVER_RO_HANDSHAKE_TOKEN"
+    private const val RELAY_PROPERTY_NAME = "ORG_JETBRAINS_PROJECTOR_RELAY_URL"
+    private const val SERVER_ID_PROPERTY_NAME = "ORG_JETBRAINS_PROJECTOR_SERVER_ID"
+    private const val RELAY_USE_WSS = "ORG_JETBRAINS_PROJECTOR_RELAY_USE_WSS"
 
     var ENABLE_BIG_COLLECTIONS_CHECKS = System.getProperty("org.jetbrains.projector.server.debug.collections.checks") == "true"
     private const val DEFAULT_BIG_COLLECTIONS_CHECKS_SIZE = 10_000
@@ -768,7 +844,7 @@ class ProjectorServer private constructor(
     const val ENABLE_AUTO_KEYMAP_SETTING = "ORG_JETBRAINS_PROJECTOR_SERVER_AUTO_KEYMAP"
     const val ENABLE_CONNECTION_CONFIRMATION = "ORG_JETBRAINS_PROJECTOR_SERVER_CONNECTION_CONFIRMATION"
 
-    fun getEnvHost(): InetAddress {
+    private fun getEnvHost(): InetAddress {
       val host = System.getProperty(HOST_PROPERTY_NAME)
       return if (host != null) InetAddress.getByName(host) else getWildcardHostAddress()
     }

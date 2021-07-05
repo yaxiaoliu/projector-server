@@ -22,35 +22,67 @@
  * if you need additional information or have any questions.
  */
 
+package org.jetbrains.projector.plugin.ui
+
+import com.intellij.icons.AllIcons
 import com.intellij.ui.table.JBTable
+import org.jetbrains.projector.plugin.ProjectorService
+import org.jetbrains.projector.plugin.isProjectorStopped
 import org.jetbrains.projector.server.util.AsyncHostResolver
 import org.jetbrains.projector.server.util.Host
 import org.jetbrains.projector.server.util.ResolvedHostSubscriber
 import java.awt.Dimension
+import java.beans.PropertyChangeEvent
+import java.beans.PropertyChangeListener
 import javax.swing.*
 import javax.swing.table.DefaultTableModel
 
-
-class ConnectionPanel(private val resolver: AsyncHostResolver) : JPanel(), ResolvedHostSubscriber {
-  private val title = JLabel("Current connections")
-  private val disconnectButton = JButton("Disconnect").apply {
+class ConnectionPanel(private val resolver: AsyncHostResolver) : JPanel(),
+                                                                 ResolvedHostSubscriber,
+                                                                 PropertyChangeListener {
+  private val title = JLabel("Current connections:")
+  private val disconnectButton = JButton("Disconnect Selected", AllIcons.Actions.Close).apply {
     addActionListener {
       val ip = clientTable.model.getValueAt(clientTable.selectedRow, 0).toString()
       ProjectorService.disconnectByIp(ip)
       update()
     }
   }
-  private val disconnectAllButton = JButton("Disconnect All").apply {
+  private val disconnectAllButton = JButton("Disconnect All", AllIcons.Actions.Close).apply {
     addActionListener {
       ProjectorService.disconnectAll()
       update()
     }
   }
-  private val updateButton = JButton("Update").apply {
+  private val updateButton = JButton("Update List", AllIcons.Actions.ForceRefresh).apply {
     addActionListener {
       update()
     }
   }
+
+  private val toggleAccessButton = JButton(getToggleButtonText(), getToggleButtonIcon()).apply {
+    addActionListener {
+      toggleAccess()
+    }
+  }
+
+  private fun getToggleButtonText() = if (isProjectorStopped()) "Start Remote Access" else "Stop Remote Access"
+
+  private fun getToggleButtonIcon() = if (isProjectorStopped()) AllIcons.Actions.Menu_open else AllIcons.Actions.Exit
+
+  private fun toggleAccess() {
+    if (isProjectorStopped()) {
+      ProjectorService.enable(null)
+    }
+    else {
+      ProjectorService.disable()
+      update()
+    }
+
+    toggleAccessButton.text = getToggleButtonText()
+    toggleAccessButton.icon = getToggleButtonIcon()
+  }
+
   private val columnNames = arrayOf("Address", "Host Name")
   private val clientTable = JBTable().apply {
     preferredScrollableViewportSize = Dimension(100, 100)
@@ -59,15 +91,19 @@ class ConnectionPanel(private val resolver: AsyncHostResolver) : JPanel(), Resol
   }
 
   init {
-    isVisible = ProjectorService.isSessionRunning
-    if (ProjectorService.isSessionRunning) {
+    isVisible = ProjectorService.isSessionRunning && !isProjectorStopped()
+
+    if (isVisible) {
       val buttonPanel = JPanel()
       LinearPanelBuilder(buttonPanel)
-        .addNextComponent(updateButton).addNextComponent(disconnectButton).addNextComponent(disconnectAllButton)
+        .addNextComponent(updateButton).addNextComponent(disconnectButton)
+        .addNextComponent(disconnectAllButton).addNextComponent(toggleAccessButton)
 
       LinearPanelBuilder(this).addNextComponent(title, topGap = 5, bottomGap = 5)
         .startNextLine().addNextComponent(JScrollPane(clientTable))
         .startNextLine().addNextComponent(buttonPanel, topGap = 5)
+
+      ProjectorService.addClientsObserver(this)
 
       update()
     }
@@ -105,5 +141,9 @@ class ConnectionPanel(private val resolver: AsyncHostResolver) : JPanel(), Resol
         clientTable.model.setValueAt(host.name, i, 1)
       }
     }
+  }
+
+  override fun propertyChange(event: PropertyChangeEvent?) {
+    update()
   }
 }
